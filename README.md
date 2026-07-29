@@ -103,12 +103,38 @@ forever, to be quoted later by someone who did not read how it was produced.
 Fixed by distinguishing CREATED from REWROTE.
 
 The log key is versioned (`probe-log.v2.jsonl`) rather than deleted and
-re-seeded: R2's delete is eventually consistent, the Worker re-read the cached
-log and appended to it, and a schema change deserves a new series rather than a
-silently mixed one. `/status` reports the key it read, because verifying a
-change by rapid manual probing does not work — a deploy propagates across edges
-over some seconds and `/probe` can force rounds faster than that, so
-consecutive checks land on different Worker versions.
+re-seeded, because a schema change deserves a new series rather than a silently
+mixed one.
+
+**A correction.** An earlier version of this README blamed the failed
+delete-and-reseed on R2 eventual consistency. That was wrong, and wrong in a way
+worth keeping on the page: `wrangler r2 object delete` **defaults to the local
+simulator**. Without `--remote` it never touched the bucket, so of course the
+log did not reset — and the same omission made `r2 object get` report every
+object as 0 bytes, which was read as a fetch race. Two mis-diagnoses from one
+missing flag. The versioned key is still the right call; the reason first given
+for it was not.
+
+`/status` reports the key it read, because verifying a change by rapid manual
+probing genuinely does not work — a deploy propagates across edges over some
+seconds and `/probe` can force rounds faster than that.
+
+### Cost
+
+Deliberately near zero, and measured rather than assumed:
+
+| | |
+|---|---|
+| probe log | ~1.5 KB, capped at 2000 rounds (~6 weeks, ~360 KB) |
+| canaries | 4 KiB each, 64 rotating, per provider |
+| stable object | 4 KiB per provider |
+| cron | 48 rounds/day, a handful of operations each |
+
+Under a megabyte in total, against 10 GB free tiers on both R2 and B2 and 100k
+Worker requests a day. The log is read-modify-write per round, so an unbounded
+file would grow the bytes written quadratically — slow enough to ignore for
+months, which is exactly the kind of thing nobody notices until it is large.
+Hence the cap.
 
 ## Build and deploy
 
