@@ -1,0 +1,30 @@
+;; Live conformance for the kura shard-store contract, run inside a Cloudflare
+;; Worker against a real R2 bucket.
+;;
+;; It exists because two bugs got past the unit suite in a row, both of the
+;; same shape: a test that supplies its own world agrees with itself.
+;;   1. the synchronous IShardStore protocol silently reported every read as
+;;      absent when handed an async transport — FakeHttp in the tests is
+;;      synchronous, so the tests were self-consistent and wrong together;
+;;   2. an un-inferred property read (.-objects) is renamed by :advanced and
+;;      returns undefined — no unit test runs through :advanced.
+;; Only a suite that runs the real code against a real object store finds
+;; either one.
+;;
+;; Library deps are shadow source-paths from the west checkout (sibling
+;; layout), the pattern kotobase-protocols-worker uses.
+{:source-paths
+ ["src"
+  "../kura-node/src"
+  "../kura/src"
+  "../erasure/src"
+  "../merkle-sum/src"
+  "../sigv4/src"]
+ :dependencies []
+ :builds
+ {:worker {:target :esm
+           :output-dir "out"
+           ;; Serialize: parallel par-compile aborts under CPU contention from
+           ;; concurrent agent builds on this machine.
+           :compiler-options {:parallel-build false}
+           :modules {:worker {:exports {default kura.conformance.worker/handler}}}}}}

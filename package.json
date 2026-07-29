@@ -1,0 +1,6 @@
+{
+  "name": "kura-conformance-worker",
+  "private": true,
+  "scripts": { "build": "shadow-cljs release worker" },
+  "devDependencies": { "shadow-cljs": "^2.28.20", "wrangler": "^4.0.0" }
+}

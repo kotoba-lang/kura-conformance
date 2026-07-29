@@ -1,0 +1,9 @@
+{
+  // Runs kura.node.async/verify> against a real R2 bucket and returns the
+  // result as JSON. Read the result at /conformance.
+  "name": "kura-conformance",
+  "main": "out/worker.js",
+  "compatibility_date": "2026-07-01",
+  "r2_buckets": [{ "binding": "SHARDS", "bucket_name": "kura-phase0" }],
+  "workers_dev": true
+}
