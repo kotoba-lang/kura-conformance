@@ -15,6 +15,7 @@
             [kura.node.crypto-noble :as nc]
             [kura.node.http-fetch :as http]
             [kura.node.r2 :as r2]
+            [kura.conformance.durability :as dur]
             [kura.conformance.probe :as probe]
             [kura.conformance.status :as status]
             [kura.node.s3-async :as s3a]
@@ -152,6 +153,35 @@
     (case path
       "/conformance" (conformance> env)
 
+      "/durability"
+      ;; Store, destroy shards, repair, verify — against the real buckets.
+      ;; Runs every scenario including the one that must fail, because a
+      ;; demonstration that only ever succeeds says nothing about where the
+      ;; edge is.
+      (let [bs (backends env)
+            base (js/Math.floor (/ (js/Date.now) 1000))]
+        (-> (js/Promise.all
+             (clj->js (map-indexed
+                       (fn [i sc]
+                         (-> (dur/demonstrate> bs (+ base i) (:kill sc))
+                             (.then (fn [r]
+                                      (clj->js
+                                       (assoc r :scenario (:name sc)
+                                              :expected-recoverable (:expect-recoverable sc)
+                                              :as-expected
+                                              (= (boolean (:expect-recoverable sc))
+                                                 (boolean (:recoverable r)))))))))
+                       (dur/scenarios))))
+            (.then (fn [rs]
+                     (let [rs (js->clj rs :keywordize-keys true)
+                           bad (remove :as-expected rs)]
+                       (json (if (empty? bad) 200 500)
+                             {:scenarios rs
+                              :all-as-expected (empty? bad)
+                              :providers (mapv (fn [[k _]] (name k)) bs)
+                              :note (str "shards are destroyed on purpose, only ones "
+                                         "this route wrote, and cleaned up after")}))))))
+
       "/probe"
       ;; Also reachable by hand, so a round can be forced when something looks
       ;; wrong rather than waiting for the schedule.
@@ -172,7 +202,7 @@
                   :why (str "two bugs got past the unit suite in a row, both "
                             "the same shape: a test that supplies its own world "
                             "agrees with itself. This one supplies none.")
-                  :routes ["/conformance" "/audit" "/status" "/probe"]})))))
+                  :routes ["/conformance" "/durability" "/audit" "/status" "/probe"]})))))
 
 (def handler
   #js {:fetch (fn [request env _ctx] (handle request env))

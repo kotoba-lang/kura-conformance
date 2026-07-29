@@ -49,6 +49,29 @@ Worker, real bucket, real optimizer output.
 
   A third and fourth provider close it. Neither is a code change.
 
+## Durability, demonstrated rather than argued
+
+`/durability` stores an object across both providers, **destroys shards on
+purpose**, repairs from what survived, and compares the recovered bytes to the
+originals. Live, against real buckets:
+
+| scenario | destroyed | plan | reads | recovered |
+|---|---|---|---|---|
+| single shard — the 99% case | 1 | local | **4** | byte-for-byte |
+| a whole local group plus its parity | 5 | global + local | 20 | byte-for-byte |
+| seven arbitrary — the measured limit | 7 | global | 16 | byte-for-byte |
+| eight — past the measured distance | 8 | **refused** | — | correctly not attempted |
+
+The last row is the important one. A demonstration that only ever succeeds says
+nothing about where the edge is, so one scenario destroys eight shards — past
+the exhaustively measured minimum distance — and the expected result is that
+recovery is **refused** rather than attempted and silently wrong.
+
+`erasure.codec-test` proves the algebra. This proves the algebra survives the
+network: two services with their own consistency behaviour and their own idea
+of what a Range header means. It deletes only shards it wrote itself, under its
+own object id, and cleans up after.
+
 ## The Phase 0 measurement
 
 `/probe` writes a canary to every backend, reads it back, compares the bytes,
