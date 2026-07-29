@@ -1,11 +1,21 @@
 (ns kura.conformance.worker
-  "Live conformance: the shard-store contract, against a real R2 bucket.
+  "Live conformance and fleet audit for the kura shard-store contract, against
+  real object stores.
 
-  `GET /conformance` runs `kura.node.async/verify>` and returns the result as
-  JSON, so a conformance run is a URL anyone can fetch rather than a claim in
-  a README. `GET /` describes what this is."
+  `GET /conformance` runs `kura.node.async/verify>` against each backend, so a
+  conformance run is a URL anyone can fetch rather than a claim in a README.
+
+  `GET /audit` is the one that matters for the durability argument. A code that
+  tolerates 13 arbitrary losses is worth nothing if all 32 shards sit in one
+  bucket. The fleet here is deliberately **two providers** — Cloudflare R2 and
+  Backblaze B2 — because one provider is one failure domain however many
+  prefixes are carved out of it, and ADR-2607299200 section 1's entire model
+  assumes shard losses are independent."
   (:require [kura.node.async :as async]
+            [kura.node.crypto-noble :as nc]
+            [kura.node.http-fetch :as http]
             [kura.node.r2 :as r2]
+            [kura.node.s3-async :as s3a]
             [kura.node.store :as store]))
 
 (defn- json [status body]
@@ -14,42 +24,96 @@
                      :headers #js {"content-type" "application/json; charset=utf-8"
                                    "cache-control" "no-store"}}))
 
-(defn- store-for [env]
+(def ^:private b2-host "s3.us-west-004.backblazeb2.com")
+
+(defn- r2-store [env]
   (r2/open {:node-id "r2-phase0"
             :bucket (.-SHARDS ^js env)
             :prefix "kura"
-            ;; Honest: one bucket in one account is one failure domain, however
-            ;; many prefixes are carved out of it.
             :independence :shared-substrate
             :failure-domain {:provider "cloudflare-r2" :bucket "kura-phase0"}}))
+
+(defn- b2-store [env]
+  (s3a/open {:node-id "b2-phase0"
+             :endpoint (str "https://" b2-host)
+             :host b2-host
+             :bucket "kura-phase0-b2"
+             :region "us-west-004"
+             :key-id (.-B2_KEY_ID ^js env)
+             :secret (.-B2_APP_KEY ^js env)
+             :prefix "kura"
+             ;; A different company, different hardware, different control
+             ;; plane. This declaration is what the durability model rests on,
+             ;; and it is the operator's claim to stand behind — the
+             ;; conformance suite deliberately cannot check it.
+             :independence :shared-provider
+             :failure-domain {:provider "backblaze-b2" :bucket "kura-phase0-b2"}
+             :http (http/fetch-http)
+             :crypto (nc/noble-crypto)
+             :now-fn http/now-iso}))
+
+(defn- backends
+  "Every backend the harness can reach. B2 appears only when its credentials
+  are configured, so a deploy without them degrades to a single-provider run
+  that `/audit` will then honestly report as one failure domain."
+  [env]
+  (cond-> [[:r2 (r2-store env)]]
+    (and (.-B2_KEY_ID ^js env) (.-B2_APP_KEY ^js env))
+    (conj [:b2 (b2-store env)])))
+
+(defn- conformance> [env]
+  (-> (js/Promise.all
+       (clj->js (map (fn [[k s]]
+                       (-> (async/run> s)
+                           (.then (fn [r]
+                                    (clj->js
+                                     (assoc r :backend (name k)
+                                            :descriptor (store/-descriptor s)))))))
+                     (backends env))))
+      (.then (fn [rs]
+               (let [rs (js->clj rs :keywordize-keys true)
+                     failed (reduce + 0 (map :failed rs))]
+                 (json (if (zero? failed) 200 500)
+                       {:results rs
+                        :total-failed failed
+                        :contract "kura.node.async/IAsyncShardStore"}))))))
+
+(defn- fleet-audit
+  "What a `shards`-wide placement over these providers is actually worth.
+
+  Shards are dealt round-robin across the declared backends, which is what a
+  placement under `kura.placement`'s domain caps approximates. `largest-domain`
+  is the number that has to stay at or under the code's tolerance — otherwise
+  one provider's bad day is the object's."
+  [env tolerated shards]
+  (let [ds (mapv (fn [[_ s]] (store/-descriptor s)) (backends env))
+        n (count ds)
+        fleet (mapv (fn [i]
+                      (let [d (nth ds (mod i n))]
+                        (assoc d :node-id (str (:node-id d) "-" i))))
+                    (range shards))]
+    (assoc (store/audit fleet tolerated)
+           :providers (mapv #(get-in % [:failure-domain :provider]) ds)
+           :shards shards)))
 
 (defn- handle [request env]
   (let [path (.-pathname (js/URL. (.-url request)))]
     (case path
-      "/conformance"
-      (let [s (store-for env)]
-        (-> (async/run> s)
-            (.then (fn [r]
-                     (json (if (zero? (:failed r)) 200 500)
-                           (assoc r
-                                  :backend "cloudflare-r2 binding"
-                                  :bucket "kura-phase0"
-                                  :contract "kura.node.async/IAsyncShardStore"
-                                  :descriptor (store/-descriptor s)))))))
+      "/conformance" (conformance> env)
 
       "/audit"
-      ;; What a fleet of these is actually worth, which is the number the
-      ;; durability argument turns on.
-      (let [d (store/-descriptor (store-for env))]
-        (js/Promise.resolve
-         (json 200 (store/audit (vec (repeat 26 d)) 13))))
+      (js/Promise.resolve
+       (json 200 {:launch-layout (fleet-audit env 13 32)
+                  :target-layout (fleet-audit env 7 26)
+                  :note (str "largest-domain must stay at or under tolerated. "
+                             "One provider is one failure domain however many "
+                             "prefixes are carved out of it.")}))
 
       (js/Promise.resolve
-       (json 200 {:what "live conformance for the kura shard-store contract"
-                  :why (str "the synchronous protocol silently reported every "
-                            "read as absent when handed an async transport, and "
-                            "the unit suite could not catch it because its fake "
-                            "transport was synchronous too")
+       (json 200 {:what "live conformance and fleet audit for the kura shard-store contract"
+                  :why (str "two bugs got past the unit suite in a row, both "
+                            "the same shape: a test that supplies its own world "
+                            "agrees with itself. This one supplies none.")
                   :routes ["/conformance" "/audit"]})))))
 
 (def handler

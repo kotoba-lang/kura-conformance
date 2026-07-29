@@ -4,7 +4,9 @@ Runs the [kura](https://github.com/kotoba-lang/kura-node) shard-store contract
 against a **real Cloudflare R2 bucket**, inside a Worker, and returns the
 result as JSON.
 
-**https://kura-conformance.04-feasts-minded.workers.dev/conformance** — 19/19.
+**https://kura-conformance.04-feasts-minded.workers.dev/conformance** — two
+providers, 19/19 each: Cloudflare R2 (binding) and Backblaze B2 (SigV4 over
+`kura.node.s3-async`).
 
 ## Why a live harness exists at all
 
@@ -31,18 +33,21 @@ Worker, real bucket, real optimizer output.
 - `/conformance` — runs `kura.node.async/verify>` against R2. Returns
   `{passed, failed, failures, total}` plus the backend's declared descriptor.
   HTTP 200 when clean, 500 when not, so it works as a check.
-- `/audit` — what a fleet of 26 of these backends is actually worth:
+- `/audit` — what a real placement over these providers is actually worth,
+  and it currently says **no**:
 
-  ```json
-  {"backends": 26, "effective-domains": 1, "largest-domain": 26,
-   "tolerated": 13, "survivable?": false,
-   "note": "one domain holds 26 shards but the code tolerates 13 —
-            durability is that domain's, not the code's"}
-  ```
+  | layout | shards | tolerates | domains | need | largest | survivable |
+  |---|---|---|---|---|---|---|
+  | launch | 32 | 13 | 2 | ≥3 | 16 | ✗ |
+  | target | 26 | 7 | 2 | ≥4 | 13 | ✗ |
 
-  One bucket is one failure domain however many prefixes are carved out of it.
-  The harness says that about **itself**, which is the point: this is a
-  measurement rig, not a durable deployment.
+  Two providers spread 32 shards 16-and-16, and 16 is more than 13.
+  `ceil(shards / tolerated)` is the minimum number of genuinely independent
+  failure domains; until the fleet has that many, the code's tolerance is
+  decoration. **Turning "spread it across providers" into an integer that is
+  either satisfied or not is the entire job of this route.**
+
+  A third and fourth provider close it. Neither is a code change.
 
 ## Build and deploy
 
