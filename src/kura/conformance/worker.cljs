@@ -15,6 +15,8 @@
             [kura.node.crypto-noble :as nc]
             [kura.node.http-fetch :as http]
             [kura.node.r2 :as r2]
+            [kura.conformance.probe :as probe]
+            [kura.conformance.status :as status]
             [kura.node.s3-async :as s3a]
             [kura.node.store :as store]))
 
@@ -96,10 +98,66 @@
            :providers (mapv #(get-in % [:failure-domain :provider]) ds)
            :shards shards)))
 
+(def ^:private log-key
+  "Versioned. The v1 series carried records written before `probe/ensure-stable>`
+  distinguished CREATED from REWROTE, so its round-0 creation reads as a
+  durability event forever. Deleting and re-seeding did not work — R2's delete
+  is eventually consistent and the worker re-read the cached log and appended to
+  it — and in any case a schema change deserves a new series rather than a
+  silently mixed one."
+  "status/probe-log.v2.jsonl")
+
+(defn- append-probe>
+  "Append one round to the probe log in R2.
+
+  Read-modify-write, which is racy under concurrency and is fine here: the
+  cron fires one round at a time and a lost round costs one sample. Using a
+  transactional store for a measurement log would be spending the complexity
+  budget in the wrong place — but the raciness is written down rather than
+  discovered."
+  [env record]
+  (let [b (.-SHARDS ^js env)]
+    (-> (.get b log-key)
+        (.then (fn [o] (if o (.text ^js o) "")))
+        (.then (fn [prev]
+                 (.put b log-key (str prev (js/JSON.stringify (clj->js record)) "\n"))))
+        (.then (fn [_] record)))))
+
+(defn- run-probe> [env]
+  (let [now (.toISOString (js/Date.))]
+    (-> (.get (.-SHARDS ^js env) log-key)
+        (.then (fn [o] (if o (.text ^js o) "")))
+        (.then (fn [prev] (count (remove empty? (.split prev "\n")))))
+        (.then (fn [round] (probe/round> (backends env) round now)))
+        (.then (fn [rec] (append-probe> env rec))))))
+
+(defn- status> [env]
+  (-> (.get (.-SHARDS ^js env) log-key)
+      (.then (fn [o] (if o (.text ^js o) "")))
+      (.then (fn [text]
+               (json 200 (assoc (status/summarise text (.toISOString (js/Date.)))
+                                :fleet (fleet-audit env 13 32)
+                                ;; Which series this is. Verifying a schema
+                                ;; change by rapid manual probing does not work
+                                ;; — Cloudflare propagates a deploy across edges
+                                ;; over some seconds, and /probe can force rounds
+                                ;; faster than that, so consecutive checks land
+                                ;; on different Worker versions writing different
+                                ;; keys. Reporting the key makes that visible
+                                ;; instead of confusing.
+                                :log-key log-key))))))
+
 (defn- handle [request env]
   (let [path (.-pathname (js/URL. (.-url request)))]
     (case path
       "/conformance" (conformance> env)
+
+      "/probe"
+      ;; Also reachable by hand, so a round can be forced when something looks
+      ;; wrong rather than waiting for the schedule.
+      (-> (run-probe> env) (.then (fn [r] (json 200 r))))
+
+      "/status" (status> env)
 
       "/audit"
       (js/Promise.resolve
@@ -114,7 +172,12 @@
                   :why (str "two bugs got past the unit suite in a row, both "
                             "the same shape: a test that supplies its own world "
                             "agrees with itself. This one supplies none.")
-                  :routes ["/conformance" "/audit"]})))))
+                  :routes ["/conformance" "/audit" "/status" "/probe"]})))))
 
 (def handler
-  #js {:fetch (fn [request env _ctx] (handle request env))})
+  #js {:fetch (fn [request env _ctx] (handle request env))
+       ;; The Phase 0 measurement runs on a schedule, because a series taken
+       ;; only when somebody remembers to look is a series that samples
+       ;; attention rather than availability.
+       :scheduled (fn [_event env ctx]
+                    (.waitUntil ^js ctx (run-probe> env)))})

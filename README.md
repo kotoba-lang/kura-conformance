@@ -49,6 +49,44 @@ Worker, real bucket, real optimizer output.
 
   A third and fourth provider close it. Neither is a code change.
 
+## The Phase 0 measurement
+
+`/probe` writes a canary to every backend, reads it back, compares the bytes,
+and appends the outcome to a log in R2. A cron trigger runs it every 30
+minutes, because a series taken only when somebody remembers to look samples
+attention rather than availability.
+
+`/status` summarises it, and the refusals are the point:
+
+- **No annual rate from a short window.** `:node-loss-rate` stays
+  `:insufficient-window` until the log covers 168 hours, and says how much
+  longer it needs. A rate estimated from a few hours of probes is noise wearing
+  the clothes of a fact.
+- **No nines.** Availability is not durability. The only durability signal here
+  is `stable-object-lost` — one object per backend, written once and never
+  rewritten — and one object is not a durability measurement either.
+- **Failure reasons, not just counts.** A count says something broke; the
+  reason says whether it was the network, the service, or us.
+
+Early numbers (two backends, minutes of window, therefore not a claim about
+anything): r2 median read ~45 ms, b2 ~358 ms, no failures observed.
+
+### A measurement artifact, and why the series is versioned
+
+Round 0 necessarily *creates* the stable object — it cannot have been there
+before the first probe. The first implementation counted that as a rewrite,
+which put a durability event in the log on day one and would have left it there
+forever, to be quoted later by someone who did not read how it was produced.
+Fixed by distinguishing CREATED from REWROTE.
+
+The log key is versioned (`probe-log.v2.jsonl`) rather than deleted and
+re-seeded: R2's delete is eventually consistent, the Worker re-read the cached
+log and appended to it, and a schema change deserves a new series rather than a
+silently mixed one. `/status` reports the key it read, because verifying a
+change by rapid manual probing does not work — a deploy propagates across edges
+over some seconds and `/probe` can force rounds faster than that, so
+consecutive checks land on different Worker versions.
+
 ## Build and deploy
 
 ```bash

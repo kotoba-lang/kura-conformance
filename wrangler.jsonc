@@ -5,5 +5,9 @@
   "main": "out/worker.js",
   "compatibility_date": "2026-07-01",
   "r2_buckets": [{ "binding": "SHARDS", "bucket_name": "kura-phase0" }],
-  "workers_dev": true
+  "workers_dev": true,
+  // Every 30 minutes. Frequent enough that a multi-hour outage is several
+  // samples rather than one, infrequent enough that the log stays small and
+  // the canary writes stay negligible against the bucket.
+  "triggers": { "crons": ["*/30 * * * *"] }
 }
