@@ -100,13 +100,27 @@
            :shards shards)))
 
 (def ^:private log-key
-  "Versioned. The v1 series carried records written before `probe/ensure-stable>`
-  distinguished CREATED from REWROTE, so its round-0 creation reads as a
-  durability event forever. Deleting and re-seeding did not work — R2's delete
-  is eventually consistent and the worker re-read the cached log and appended to
-  it — and in any case a schema change deserves a new series rather than a
-  silently mixed one."
+  "Versioned because the v1 series carried records written before
+  `probe/ensure-stable>` distinguished CREATED from REWROTE, so its round-0
+  creation reads as a durability event forever. A schema change deserves a new
+  series rather than a silently mixed one.
+
+  CORRECTION: an earlier version of this comment blamed the failed delete-and-
+  reseed on R2 eventual consistency. That was wrong. `wrangler r2 object
+  delete` defaults to the LOCAL simulator; without `--remote` it never touched
+  the bucket, so of course the log did not reset. The versioned key is still
+  the right call, but for the reason above and not the one first given."
   "status/probe-log.v2.jsonl")
+
+(def ^:private max-log-rounds
+  "Rounds kept in the probe log.
+
+  The log is read-modify-write on every round, so an unbounded file means the
+  bytes written grow quadratically in the number of rounds — at 48 rounds a day
+  that is slow enough to ignore for months and exactly the kind of thing nobody
+  notices until it is large. 2000 rounds is ~6 weeks, comfortably past the
+  168-hour window `status/min-window-hours` needs before it will report a rate."
+  2000)
 
 (defn- append-probe>
   "Append one round to the probe log in R2.
@@ -121,7 +135,15 @@
     (-> (.get b log-key)
         (.then (fn [o] (if o (.text ^js o) "")))
         (.then (fn [prev]
-                 (.put b log-key (str prev (js/JSON.stringify (clj->js record)) "\n"))))
+                 (let [lines (vec (remove empty? (.split prev "\n")))
+                       kept (if (> (count lines) max-log-rounds)
+                              (subvec lines (- (count lines) max-log-rounds))
+                              lines)
+                       next-log (str (clojure.string/join "\n"
+                                                          (conj kept
+                                                                (js/JSON.stringify (clj->js record))))
+                                     "\n")]
+                   (.put b log-key next-log))))
         (.then (fn [_] record)))))
 
 (defn- run-probe> [env]
