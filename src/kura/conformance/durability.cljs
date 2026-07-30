@@ -15,7 +15,17 @@
 
   **It deletes shards on purpose.** Only ones it wrote itself, under its own
   object id, in the Phase 0 buckets. Nothing here touches a shard it did not
-  create."
+  create.
+
+  **Two providers, not the whole fleet.** A Worker cannot reach a node on a
+  tailnet, so this proves the algebra survives the network across the two rented
+  backends and nothing more. The same demonstration has been driven across all
+  four domains — including deleting an entire domain's shards, the whole Fukuoka
+  room, with identical bytes recovered — from inside the tailnet by
+  `kura-node/script/multi_domain_durability.cljs`. That run is not schedulable
+  from here, which is exactly why this one exists: what can be automated is
+  narrower than what has been proved, and conflating them would let the narrower
+  thing wear the wider claim."
   (:require [erasure.lrc :as lrc]
             [erasure.matrix :as matrix]
             [kura.node.async :as async]

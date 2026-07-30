@@ -213,11 +213,23 @@
 
       "/audit"
       (js/Promise.resolve
-       (json 200 {:launch-layout (fleet-audit env 13 32)
+       (json 200 {:scope "the backends THIS WORKER can reach"
+                  :launch-layout (fleet-audit env 13 32)
                   :target-layout (fleet-audit env 7 26)
                   :note (str "largest-domain must stay at or under tolerated. "
                              "One provider is one failure domain however many "
-                             "prefixes are carved out of it.")}))
+                             "prefixes are carved out of it.")
+                  :not-the-whole-fleet
+                  (str "This audits the two rented buckets, because they are what "
+                       "a Worker can reach. The fleet also has self-hosted nodes "
+                       "on a tailnet, which have no public address and therefore "
+                       "cannot be probed from here — see the coordinator's /fleet "
+                       "for declared membership across all four domains. The two "
+                       "numbers are kept apart on purpose: this one is a PROBE of "
+                       "what answered, that one is a CLAIM an operator made, and "
+                       "merging them would publish the claim with the probe's "
+                       "authority.")
+                  :full-fleet "https://kura-coordinator.04-feasts-minded.workers.dev/fleet"}))
 
       (js/Promise.resolve
        (json 200 {:what "live conformance and fleet audit for the kura shard-store contract"
