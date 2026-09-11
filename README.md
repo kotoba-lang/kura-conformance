@@ -140,7 +140,7 @@ Hence the cap.
 
 ```bash
 npm install
-node ../../../scripts/resource-guard.mjs run build -- npx shadow-cljs release worker
+node ../../../scripts/resource-guard.mjs run build -- amu compile --target wasm32-browser worker
 npx wrangler deploy
 ```
 
